@@ -11,7 +11,7 @@ import argparse
 import math
 import sys
 import time
-from typing import Dict, Iterable, List
+from typing import Dict, List
 
 import pygame
 import pygame.camera
@@ -23,6 +23,12 @@ ARROW_COLOR = (0, 255, 0)
 ARROW_HEIGHT = 40
 ARROW_HALF_WIDTH = 18
 ARROW_MARGIN_TOP = 12
+TEXT_OFFSET_TOP = ARROW_MARGIN_TOP + ARROW_HEIGHT + 6
+TEXT_SPACING = 2
+TEXT_COLOR = (255, 255, 255)
+SPEED_COLOR_AWAY = (0, 255, 0)
+SPEED_COLOR_CLOSING = (255, 0, 0)
+SPEED_COLOR_STATIONARY = (200, 200, 200)
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,8 +36,8 @@ def parse_args() -> argparse.Namespace:
         description="Overlay Toyota radar tracks onto a UVC camera feed using pygame."
     )
     # CAN / radar configuration
-    parser.add_argument("--radar-channel", default="can1", help="Radar CAN channel.")
-    parser.add_argument("--car-channel", default="can0", help="Car CAN channel.")
+    parser.add_argument("--radar-channel", default="can0", help="Radar CAN channel.")
+    parser.add_argument("--car-channel", default="can1", help="Car CAN channel.")
     parser.add_argument(
         "--interface",
         default="socketcan",
@@ -171,6 +177,8 @@ class RadarCameraOverlay:
         self.driver: ToyotaRadarDriver | None = None
         self.clock = pygame.time.Clock()
         self._frame_surface: pygame.Surface | None = None
+        self.font: pygame.font.Font | None = None
+        self._last_debug_print = 0.0
 
     def _init_pygame(self) -> None:
         pygame.init()
@@ -191,6 +199,8 @@ class RadarCameraOverlay:
             raise RuntimeError("Failed to create pygame display surface.")
 
         self._frame_surface = pygame.Surface(self.display_size)
+        pygame.font.init()
+        self.font = pygame.font.Font(None, 28)
 
     def _init_camera(self) -> None:
         pygame.camera.init()
@@ -284,6 +294,7 @@ class RadarCameraOverlay:
 
             tracks = self.driver.get_tracks()
             overlay_tracks = self._select_tracks(tracks)
+            self._debug_tracks(tracks, overlay_tracks)
             self._draw_track_arrows(self.screen, overlay_tracks)
 
             pygame.display.flip()
@@ -302,7 +313,7 @@ class RadarCameraOverlay:
         return candidates[: max(1, self.args.track_count)]
 
     def _draw_track_arrows(
-        self, surface: pygame.Surface, tracks: Iterable[RadarTrack]
+        self, surface: pygame.Surface, tracks: List[RadarTrack]
     ) -> None:
         width = surface.get_width()
         half_fov = max(self.args.camera_fov / 2.0, 1e-3)
@@ -314,6 +325,7 @@ class RadarCameraOverlay:
             normalized = (clamped + half_fov) / (2.0 * half_fov)
             x_pos = int(round(normalized * (width - 1)))
             self._draw_arrow(surface, x_pos)
+            self._draw_track_text(surface, track, x_pos)
 
     def _draw_arrow(self, surface: pygame.Surface, center_x: int) -> None:
         top_y = ARROW_MARGIN_TOP
@@ -323,6 +335,47 @@ class RadarCameraOverlay:
             (center_x + ARROW_HALF_WIDTH, top_y + ARROW_HEIGHT),
         ]
         pygame.draw.polygon(surface, ARROW_COLOR, points)
+
+    def _draw_track_text(self, surface: pygame.Surface, track: RadarTrack, center_x: int) -> None:
+        if not self.font:
+            return
+
+        range_m = math.hypot(track.long_dist, track.lat_dist)
+        range_surface = self.font.render(f"{range_m:.1f} m", True, TEXT_COLOR)
+        range_rect = range_surface.get_rect()
+        range_rect.midtop = (center_x, TEXT_OFFSET_TOP)
+        surface.blit(range_surface, range_rect)
+
+        speed = track.rel_speed
+        # Toyota radar convention: positive rel_speed = target moving away, negative = closing.
+        if speed > 0.1:
+            speed_color = SPEED_COLOR_AWAY
+        elif speed < -0.1:
+            speed_color = SPEED_COLOR_CLOSING
+        else:
+            speed_color = SPEED_COLOR_STATIONARY
+
+        speed_surface = self.font.render(f"{speed:+.1f} m/s", True, speed_color)
+        speed_rect = speed_surface.get_rect()
+        speed_rect.midtop = (center_x, range_rect.bottom + TEXT_SPACING)
+        surface.blit(speed_surface, speed_rect)
+
+    def _debug_tracks(
+        self, tracks: Dict[int, RadarTrack], overlay_tracks: List[RadarTrack]
+    ) -> None:
+        now = time.time()
+        if now - self._last_debug_print < 0.5:
+            return
+        self._last_debug_print = now
+        summary = ", ".join(
+            f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f}"
+            for track in overlay_tracks
+        )
+        if not summary:
+            summary = "no overlay tracks"
+        print(
+            f"[{time.strftime('%H:%M:%S')}] cached={len(tracks)} overlay={len(overlay_tracks)} -> {summary}"
+        )
 
 
 def main() -> None:
