@@ -11,7 +11,7 @@ import argparse
 import math
 import sys
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pygame
 import pygame.camera
@@ -33,6 +33,12 @@ TEXT_COLOR = (255, 255, 255)
 SPEED_COLOR_AWAY = (0, 255, 0)
 SPEED_COLOR_CLOSING = (255, 0, 0)
 SPEED_COLOR_STATIONARY = (200, 200, 200)
+
+OVERTAKE_ARROW_COLOR = (30, 144, 255)
+OVERTAKE_ARROW_ALPHA = 230
+OVERTAKE_ARROW_WIDTH = 160
+OVERTAKE_ARROW_HEIGHT = 100
+OVERTAKE_ARROW_MARGIN = 24
 
 
 def parse_args() -> argparse.Namespace:
@@ -193,6 +199,30 @@ def parse_args() -> argparse.Namespace:
         default=20.0,
         help="Delta speed threshold (km/h) for switching marker color to red.",
     )
+    parser.add_argument(
+        "--overtake-time-threshold",
+        type=float,
+        default=1.0,
+        help="Maximum time-to-overtake (seconds) to trigger the overtake warning.",
+    )
+    parser.add_argument(
+        "--overtake-min-closing-kph",
+        type=float,
+        default=5.0,
+        help="Minimum closing speed in km/h required to trigger the overtake warning.",
+    )
+    parser.add_argument(
+        "--overtake-min-lateral",
+        type=float,
+        default=0.5,
+        help="Minimum absolute lateral offset in meters to qualify for an overtake warning.",
+    )
+    parser.add_argument(
+        "--overtake-arrow-duration",
+        type=float,
+        default=1.0,
+        help="Seconds to continue displaying the overtake arrow after a track disappears.",
+    )
     return parser.parse_args()
 
 
@@ -214,6 +244,8 @@ class RadarCameraOverlay:
         self._frame_surface: pygame.Surface | None = None
         self.font: pygame.font.Font | None = None
         self._arrow_cache: Dict[Tuple[int, int, int], pygame.Surface] = {}
+        self._overtake_surfaces: Dict[str, pygame.Surface] = {}
+        self._overtake_alert: Optional[dict] = None
         self._last_debug_print = 0.0
 
     def _init_pygame(self) -> None:
@@ -332,9 +364,11 @@ class RadarCameraOverlay:
             self.screen.blit(frame, (0, 0))
 
             tracks = self.driver.get_tracks()
+            self._update_overtake_alert(tracks)
             overlay_tracks = self._select_tracks(tracks)
             self._debug_tracks(tracks, overlay_tracks)
             self._draw_track_arrows(self.screen, overlay_tracks)
+            self._draw_overtake_warning(self.screen)
 
             pygame.display.flip()
             self.clock.tick(self.args.refresh_hz)
@@ -422,6 +456,99 @@ class RadarCameraOverlay:
         pygame.draw.polygon(surf, (0, 0, 0, 0), inner_points)
         return surf
 
+    def _update_overtake_alert(self, tracks: Dict[int, RadarTrack]) -> None:
+        now = time.time()
+        if self._overtake_alert and now > self._overtake_alert.get("expires_at", 0.0):
+            self._overtake_alert = None
+
+        threshold = max(self.args.overtake_time_threshold, 0.01)
+        min_lateral = max(self.args.overtake_min_lateral, 0.0)
+        min_closing = max(self.args.overtake_min_closing_kph / 3.6, 0.0)
+        duration = max(self.args.overtake_arrow_duration, 0.0)
+
+        best_candidate: Optional[dict] = None
+        best_tto = float("inf")
+
+        for track in tracks.values():
+            if track.rel_speed >= -1e-3:
+                continue
+            closing_speed = -track.rel_speed
+            if closing_speed < min_closing:
+                continue
+            if track.long_dist <= 0.0:
+                continue
+            tto = track.long_dist / closing_speed
+            if tto < 0.0 or tto > threshold:
+                continue
+            if abs(track.lat_dist) < min_lateral:
+                continue
+
+            side = "left" if track.lat_dist >= 0.0 else "right"
+            if tto < best_tto:
+                best_candidate = {
+                    "side": side,
+                    "expires_at": now + duration,
+                    "trigger_time": now,
+                    "rel_speed": track.rel_speed,
+                    "tto": tto,
+                }
+                best_tto = tto
+
+        if best_candidate:
+            self._overtake_alert = best_candidate
+
+    def _draw_overtake_warning(self, surface: pygame.Surface) -> None:
+        if not self._overtake_alert:
+            return
+
+        now = time.time()
+        expires_at = self._overtake_alert.get("expires_at", 0.0)
+        if now > expires_at:
+            self._overtake_alert = None
+            return
+
+        side = self._overtake_alert.get("side", "left")
+        render_side = side
+        if self.args.mirror_output:
+            render_side = "left" if side == "right" else "right"
+
+        arrow_surface = self._get_overtake_surface(render_side)
+        if arrow_surface is None:
+            return
+
+        y = OVERTAKE_ARROW_MARGIN
+        if render_side == "left":
+            x = OVERTAKE_ARROW_MARGIN
+        else:
+            x = surface.get_width() - OVERTAKE_ARROW_MARGIN - arrow_surface.get_width()
+
+        surface.blit(arrow_surface, (x, y))
+
+    def _get_overtake_surface(self, side: str) -> Optional[pygame.Surface]:
+        surf = self._overtake_surfaces.get(side)
+        if surf is None:
+            surf = self._build_overtake_arrow(side)
+            if surf:
+                self._overtake_surfaces[side] = surf
+        return surf
+
+    def _build_overtake_arrow(self, side: str) -> pygame.Surface:
+        width = OVERTAKE_ARROW_WIDTH
+        height = OVERTAKE_ARROW_HEIGHT
+        surf = pygame.Surface((width, height), pygame.SRCALPHA).convert_alpha()
+
+        if side == "left":
+            points = [(width, 0), (width, height), (0, height // 2)]
+        else:
+            points = [(0, 0), (width, height // 2), (0, height)]
+
+        pygame.draw.polygon(
+            surf,
+            (*OVERTAKE_ARROW_COLOR, OVERTAKE_ARROW_ALPHA),
+            points,
+        )
+        return surf
+
     def _compute_marker_color(self, track: RadarTrack) -> Tuple[int, int, int]:
         delta_kph = abs(track.rel_speed) * 3.6
         yellow_thr = max(self.args.warn_yellow_kph, 0.0)
@@ -467,14 +594,24 @@ class RadarCameraOverlay:
         if now - self._last_debug_print < 0.5:
             return
         self._last_debug_print = now
-        summary = ", ".join(
-            f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f} rel={track.rel_speed:+.1f}"
-            for track in overlay_tracks
-        )
+        summary = ", ".join(self._format_debug_entry(track) for track in overlay_tracks)
         if not summary:
             summary = "no overlay tracks"
         print(
             f"[{time.strftime('%H:%M:%S')}] cached={len(tracks)} overlay={len(overlay_tracks)} -> {summary}"
+        )
+
+    def _format_debug_entry(self, track: RadarTrack) -> str:
+        closing_speed = -track.rel_speed if track.rel_speed < 0.0 else None
+        if closing_speed and track.long_dist > 0.0:
+            tto = track.long_dist / closing_speed
+            return (
+                f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f} "
+                f"rel={track.rel_speed:+.1f} tto={tto:.2f}s"
+            )
+        return (
+            f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f} "
+            f"rel={track.rel_speed:+.1f}"
         )
 
 

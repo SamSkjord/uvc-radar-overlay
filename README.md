@@ -9,8 +9,11 @@ Pygame overlay that superimposes millimeter-wave radar tracks on top of a live U
 
 ## Features
 - UVC camera capture via `pygame.camera` with fullscreen or windowed presentation.
-- FOV-aware projection of radar tracks into screen space, rendered as green arrows on the camera feed.
-- Tunable CLI parameters for CAN channels, camera device/resolution/FOV, number of tracks to display, and distance filtering.
+- FOV-aware projection of radar tracks into screen space, rendered as downward chevrons that include range readouts and color-coded speed labels.
+- Automatic clustering of nearby tracks to reduce duplicate markers and configurable mirroring for driver/passenger side cameras.
+- Configurable speed thresholds that match Bosch CAS-M conventions for green/yellow/red status cues.
+- Persistent blue overtake arrows that highlight the side a closing vehicle will pass, even if the track briefly drops out.
+- Tunable CLI parameters for CAN channels, camera device/resolution/FOV, number of tracks to display, distance filtering, and warning behaviour.
 
 ## Requirements
 - Python 3.8+
@@ -42,6 +45,7 @@ python3 -m pip install pygame python-can cantools
    ```
 
    - Toggle fullscreen by omitting `--windowed`.
+   - Mirroring is enabled by default; disable with `--no-mirror-output` if your camera is already mirrored.
    - Press `Esc` or `q` to exit.
 
 ### Key CLI Flags
@@ -49,9 +53,18 @@ python3 -m pip install pygame python-can cantools
 - `--camera-width` / `--camera-height`: capture resolution (defaults 1280×720).
 - `--camera-fov`: horizontal camera field of view in degrees used for track projection.
 - `--track-count`: number of nearest radar tracks to overlay (default 3).
-- `--max-distance`: longitudinal distance cutoff in meters (default 120).
+- `--merge-radius`: meters for deduplicating nearby radar targets (default 1.0).
+- `--warn-yellow-kph` / `--warn-red-kph`: relative-speed thresholds for chevron colour changes (defaults 10 / 20 km/h).
+- `--overtake-time-threshold`: time-to-overtake trigger in seconds (default 1.0).
+- `--overtake-min-closing-kph`: minimum closing speed of the trailing object in km/h (default 5.0).
+- `--overtake-arrow-duration`: keep the blue overtake arrow visible this many seconds after a track disappears (default 1.0).
+- `--mirror-output` / `--no-mirror-output`: flip the camera feed and overlays horizontally (enabled by default).
 
 Run `python3 radar_pygame.py --help` to view all options.
+
+### Overtake Warning
+
+Overtake alerts are raised when a trailing vehicle’s predicted time-to-overtake is below the configured threshold, its lateral offset exceeds `--overtake-min-lateral`, and its closing speed meets `--overtake-min-closing-kph`. When triggered, a blue chevron appears on the side of the screen corresponding to the passing direction and persists for `--overtake-arrow-duration` seconds even if the track temporarily drops.
 
 ## Repository Layout
 - `toyota_radar_driver.py` – reusable driver with callback API and keep-alive management.
