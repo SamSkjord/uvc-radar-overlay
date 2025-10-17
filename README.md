@@ -1,14 +1,13 @@
-# Toyota Radar Camera Overlay
+# Radar Camera Overlay
 
 [![Python Version](https://img.shields.io/badge/python-3.7%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
 [![AI Slop](https://img.shields.io/badge/AI%20Slop%20-%20ChatGPT%20Codex%205-beige)](https://www.morningstar.com/news/marketwatch/20251003175/the-ai-bubble-is-17-times-the-size-of-the-dot-com-frenzy-and-four-times-subprime-this-analyst-argues)
 
-Pygame overlay that superimposes Toyota millimeter-wave radar tracks on top of a live UVC camera feed. The project pairs the reusable radar driver from `toyota_radar_driver.py` with a lightweight visualization in `radar_pygame.py`, providing quick spatial context for the three nearest objects detected by the radar.
+Pygame overlay that superimposes millimeter-wave radar tracks on top of a live UVC camera feed. The project pairs the reusable radar driver from `toyota_radar_driver.py` with a lightweight visualization in `radar_pygame.py`, providing quick spatial context for the three nearest objects detected by the radar.
 
 ## Features
-- Modular Toyota radar driver with configurable CAN interface setup and keep-alive support.
 - UVC camera capture via `pygame.camera` with fullscreen or windowed presentation.
 - FOV-aware projection of radar tracks into screen space, rendered as green arrows on the camera feed.
 - Tunable CLI parameters for CAN channels, camera device/resolution/FOV, number of tracks to display, and distance filtering.
