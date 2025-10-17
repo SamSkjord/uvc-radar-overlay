@@ -11,7 +11,7 @@ import argparse
 import math
 import sys
 import time
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import pygame
 import pygame.camera
@@ -19,10 +19,14 @@ import pygame.camera
 from toyota_radar_driver import RadarTrack, ToyotaRadarConfig, ToyotaRadarDriver
 
 # Default overlay styling
-ARROW_COLOR = (0, 255, 0)
 ARROW_HEIGHT = 40
 ARROW_HALF_WIDTH = 18
 ARROW_MARGIN_TOP = 12
+CHEVRON_INNER_OFFSET = 12
+CHEVRON_TIP_INSET = 8
+MARKER_COLOR_GREEN = (0, 200, 0)
+MARKER_COLOR_YELLOW = (255, 220, 0)
+MARKER_COLOR_RED = (255, 0, 0)
 TEXT_OFFSET_TOP = ARROW_MARGIN_TOP + ARROW_HEIGHT + 6
 TEXT_SPACING = 2
 TEXT_COLOR = (255, 255, 255)
@@ -141,6 +145,19 @@ def parse_args() -> argparse.Namespace:
         help="Use a window instead of fullscreen display mode.",
     )
     parser.add_argument(
+        "--mirror-output",
+        dest="mirror_output",
+        action="store_true",
+        default=True,
+        help="Horizontally mirror the camera feed and overlay positions (default).",
+    )
+    parser.add_argument(
+        "--no-mirror-output",
+        dest="mirror_output",
+        action="store_false",
+        help="Disable horizontal mirroring of the camera feed and overlay positions.",
+    )
+    parser.add_argument(
         "--refresh-hz",
         type=float,
         default=30.0,
@@ -164,6 +181,18 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Merge tracks within this 2D radius (meters) into a single target.",
     )
+    parser.add_argument(
+        "--warn-yellow-kph",
+        type=float,
+        default=10.0,
+        help="Delta speed threshold (km/h) for switching marker color to yellow.",
+    )
+    parser.add_argument(
+        "--warn-red-kph",
+        type=float,
+        default=20.0,
+        help="Delta speed threshold (km/h) for switching marker color to red.",
+    )
     return parser.parse_args()
 
 
@@ -184,6 +213,7 @@ class RadarCameraOverlay:
         self.clock = pygame.time.Clock()
         self._frame_surface: pygame.Surface | None = None
         self.font: pygame.font.Font | None = None
+        self._arrow_cache: Dict[Tuple[int, int, int], pygame.Surface] = {}
         self._last_debug_print = 0.0
 
     def _init_pygame(self) -> None:
@@ -296,6 +326,9 @@ class RadarCameraOverlay:
             if frame.get_size() != self.display_size:
                 frame = pygame.transform.smoothscale(frame, self.display_size)
 
+            if self.args.mirror_output:
+                frame = pygame.transform.flip(frame, True, False)
+
             self.screen.blit(frame, (0, 0))
 
             tracks = self.driver.get_tracks()
@@ -350,19 +383,59 @@ class RadarCameraOverlay:
             clamped = clamp(angle_deg, -half_fov, half_fov)
             normalized = (clamped + half_fov) / (2.0 * half_fov)
             x_pos = int(round(normalized * (width - 1)))
-            self._draw_arrow(surface, x_pos)
+            if self.args.mirror_output:
+                x_pos = width - 1 - x_pos
+            color = self._compute_marker_color(track)
+            self._draw_arrow(surface, x_pos, color)
             self._draw_track_text(surface, track, x_pos)
 
-    def _draw_arrow(self, surface: pygame.Surface, center_x: int) -> None:
+    def _draw_arrow(
+        self, surface: pygame.Surface, center_x: int, color: Tuple[int, int, int]
+    ) -> None:
         top_y = ARROW_MARGIN_TOP
-        points = [
-            (center_x, top_y),
-            (center_x - ARROW_HALF_WIDTH, top_y + ARROW_HEIGHT),
-            (center_x + ARROW_HALF_WIDTH, top_y + ARROW_HEIGHT),
-        ]
-        pygame.draw.polygon(surface, ARROW_COLOR, points)
+        chevron = self._arrow_cache.get(color)
+        if chevron is None:
+            chevron = self._build_chevron_surface(color)
+            self._arrow_cache[color] = chevron
+        surface.blit(chevron, (center_x - chevron.get_width() // 2, top_y))
 
-    def _draw_track_text(self, surface: pygame.Surface, track: RadarTrack, center_x: int) -> None:
+    def _build_chevron_surface(self, color: Tuple[int, int, int]) -> pygame.Surface:
+        width = ARROW_HALF_WIDTH * 2
+        height = ARROW_HEIGHT
+        surf = pygame.Surface((width, height), pygame.SRCALPHA).convert_alpha()
+
+        outer_points = [
+            (width // 2, height),
+            (0, 0),
+            (width, 0),
+        ]
+        pygame.draw.polygon(surf, (*color, 255), outer_points)
+
+        inner_margin_x = max(min(width // 4, width // 2 - 1), 1)
+        inner_top_y = min(max(CHEVRON_INNER_OFFSET, 0), height - CHEVRON_TIP_INSET - 1)
+        inner_tip_y = min(max(height - CHEVRON_TIP_INSET, inner_top_y + 1), height - 1)
+        inner_points = [
+            (width // 2, inner_tip_y),
+            (inner_margin_x, inner_top_y),
+            (width - inner_margin_x, inner_top_y),
+        ]
+        pygame.draw.polygon(surf, (0, 0, 0, 0), inner_points)
+        return surf
+
+    def _compute_marker_color(self, track: RadarTrack) -> Tuple[int, int, int]:
+        delta_kph = abs(track.rel_speed) * 3.6
+        yellow_thr = max(self.args.warn_yellow_kph, 0.0)
+        red_thr = max(self.args.warn_red_kph, yellow_thr)
+
+        if delta_kph <= yellow_thr:
+            return MARKER_COLOR_GREEN
+        if delta_kph >= red_thr:
+            return MARKER_COLOR_RED
+        return MARKER_COLOR_YELLOW
+
+    def _draw_track_text(
+        self, surface: pygame.Surface, track: RadarTrack, center_x: int
+    ) -> None:
         if not self.font:
             return
 
@@ -373,6 +446,7 @@ class RadarCameraOverlay:
         surface.blit(range_surface, range_rect)
 
         speed = track.rel_speed
+        speed_kph = speed * 3.6
         # Toyota radar convention: positive rel_speed = target moving away, negative = closing.
         if speed > 0.1:
             speed_color = SPEED_COLOR_AWAY
@@ -394,7 +468,7 @@ class RadarCameraOverlay:
             return
         self._last_debug_print = now
         summary = ", ".join(
-            f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f}"
+            f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f} rel={track.rel_speed:+.1f}"
             for track in overlay_tracks
         )
         if not summary:
