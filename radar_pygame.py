@@ -158,6 +158,12 @@ def parse_args() -> argparse.Namespace:
         default=120.0,
         help="Maximum longitudinal distance in meters to consider for overlay.",
     )
+    parser.add_argument(
+        "--merge-radius",
+        type=float,
+        default=1.0,
+        help="Merge tracks within this 2D radius (meters) into a single target.",
+    )
     return parser.parse_args()
 
 
@@ -310,7 +316,27 @@ class RadarCameraOverlay:
             if track.long_dist > 0.0 and track.long_dist <= self.args.max_distance
         ]
         candidates.sort(key=lambda track: track.long_dist)
-        return candidates[: max(1, self.args.track_count)]
+
+        merged: List[RadarTrack] = []
+        merge_radius = max(self.args.merge_radius, 0.0)
+
+        for track in candidates:
+            merged_into_existing = False
+            for idx, existing in enumerate(merged):
+                separation = math.hypot(
+                    track.long_dist - existing.long_dist,
+                    track.lat_dist - existing.lat_dist,
+                )
+                if separation <= merge_radius:
+                    if track.long_dist < existing.long_dist:
+                        merged[idx] = track
+                    merged_into_existing = True
+                    break
+            if not merged_into_existing:
+                merged.append(track)
+
+        merged.sort(key=lambda track: track.long_dist)
+        return merged[: max(1, self.args.track_count)]
 
     def _draw_track_arrows(
         self, surface: pygame.Surface, tracks: List[RadarTrack]
