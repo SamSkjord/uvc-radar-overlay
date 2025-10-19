@@ -8,13 +8,20 @@ view by drawing green arrows along the top edge of the display.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pygame
 import pygame.camera
+
+try:
+    import cv2  # type: ignore[import]
+except ImportError:  # pragma: no cover - optional dependency
+    cv2 = None  # type: ignore[assignment]
 
 from toyota_radar_driver import RadarTrack, ToyotaRadarConfig, ToyotaRadarDriver
 
@@ -223,6 +230,29 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Seconds to continue displaying the overtake arrow after a track disappears.",
     )
+    parser.add_argument(
+        "--replay-session",
+        type=Path,
+        default=None,
+        help="Directory containing recorded data from radar_capture.py.",
+    )
+    parser.add_argument(
+        "--replay-video",
+        type=Path,
+        default=None,
+        help="Explicit path to a recorded video file for replay.",
+    )
+    parser.add_argument(
+        "--replay-tracks",
+        type=Path,
+        default=None,
+        help="Explicit path to a recorded track JSONL file for replay.",
+    )
+    parser.add_argument(
+        "--replay-loop",
+        action="store_true",
+        help="Loop playback when replay inputs reach the end.",
+    )
     return parser.parse_args()
 
 
@@ -246,6 +276,8 @@ class RadarCameraOverlay:
         self._arrow_cache: Dict[Tuple[int, int, int], pygame.Surface] = {}
         self._overtake_surfaces: Dict[str, pygame.Surface] = {}
         self._overtake_alert: Optional[dict] = None
+        self.replay_source: Optional["ReplaySource"] = None
+        self._camera_initialized = False
         self._last_debug_print = 0.0
 
     def _init_pygame(self) -> None:
@@ -284,6 +316,7 @@ class RadarCameraOverlay:
                 f"Failed to start camera {self.args.camera_device}: {exc}"
             )
         self.camera = camera
+        self._camera_initialized = True
 
     def _init_driver(self) -> None:
         config = ToyotaRadarConfig(
@@ -307,30 +340,113 @@ class RadarCameraOverlay:
         driver.start()
         self.driver = driver
 
+    def _replay_enabled(self) -> bool:
+        return bool(
+            self.args.replay_session
+            or self.args.replay_video
+            or self.args.replay_tracks
+        )
+
+    def _init_replay_source(self) -> None:
+        if cv2 is None:
+            raise RuntimeError(
+                "Replay mode requires opencv-python. Install with "
+                "`python3 -m pip install opencv-python`."
+            )
+        video_path, tracks_path = self._resolve_replay_paths()
+        self.replay_source = ReplaySource(video_path, tracks_path)
+
+        width = self.args.display_width or self.replay_source.width
+        height = self.args.display_height or self.replay_source.height
+        self.display_size = (width, height)
+
+    def _resolve_replay_paths(self) -> Tuple[Path, Path]:
+        video_path = self.args.replay_video
+        tracks_path = self.args.replay_tracks
+        session = self.args.replay_session
+
+        if session:
+            session = session.expanduser().resolve()
+            if not session.exists():
+                raise RuntimeError(f"Replay session directory {session} does not exist.")
+            if video_path is None:
+                video_path = self._find_session_file(session, "*.mp4")
+            if tracks_path is None:
+                tracks_path = self._find_session_file(session, "*_tracks.jsonl")
+
+        if video_path is None or tracks_path is None:
+            raise RuntimeError(
+                "Replay mode requires both video and track inputs. "
+                "Provide --replay-session or both --replay-video and --replay-tracks."
+            )
+
+        video_path = video_path.expanduser().resolve()
+        tracks_path = tracks_path.expanduser().resolve()
+
+        if not video_path.exists():
+            raise RuntimeError(f"Replay video {video_path} does not exist.")
+        if not tracks_path.exists():
+            raise RuntimeError(f"Replay track log {tracks_path} does not exist.")
+        return video_path, tracks_path
+
+    def _find_session_file(self, session: Path, pattern: str) -> Path:
+        matches = sorted(session.glob(pattern))
+        if not matches:
+            raise RuntimeError(f"No files matching '{pattern}' found in {session}.")
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"Multiple files matching '{pattern}' found in {session}; "
+                "specify the desired file explicitly."
+            )
+        return matches[0]
+
+    def _surface_from_array(self, frame) -> pygame.Surface:
+        if cv2 is None:
+            raise RuntimeError(
+                "Replay mode requires opencv-python. Install with "
+                "`python3 -m pip install opencv-python`."
+            )
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        surface = pygame.image.frombuffer(
+            frame_rgb.tobytes(), (frame_rgb.shape[1], frame_rgb.shape[0]), "RGB"
+        )
+        return surface.convert()
+
     def _shutdown(self) -> None:
         if self.camera:
             try:
                 self.camera.stop()
             except Exception:
                 pass
-        pygame.camera.quit()
+        if self._camera_initialized:
+            pygame.camera.quit()
+        if self.replay_source:
+            self.replay_source.close()
         if self.driver:
             self.driver.stop()
         pygame.quit()
 
     def run(self) -> int:
+        replay_mode = self._replay_enabled()
+
         try:
+            if replay_mode:
+                self._init_replay_source()
             self._init_pygame()
-            self._init_camera()
-            self._init_driver()
+            if not replay_mode:
+                self._init_camera()
+                self._init_driver()
         except Exception as exc:
             print(f"Initialization failed: {exc}")
             self._shutdown()
             return 1
 
         assert self.screen is not None
-        assert self.camera is not None
-        assert self.driver is not None
+        if replay_mode:
+            assert self.replay_source is not None
+        else:
+            assert self.camera is not None
+            assert self.driver is not None
 
         running = True
         last_frame_time = time.time()
@@ -351,19 +467,30 @@ class RadarCameraOverlay:
                 time.sleep(target_dt - (now - last_frame_time))
             last_frame_time = time.time()
 
-            frame = self.camera.get_image(self._frame_surface)
-            if frame is None:
-                continue
+            if replay_mode:
+                frame_array, tracks = self.replay_source.next_frame()
+                if frame_array is None:
+                    if self.args.replay_loop:
+                        self.replay_source.reset()
+                        continue
+                    break
+                frame_surface = self._surface_from_array(frame_array)
+            else:
+                frame_surface = self.camera.get_image(self._frame_surface)
+                if frame_surface is None:
+                    continue
+                tracks = self.driver.get_tracks()
 
-            if frame.get_size() != self.display_size:
-                frame = pygame.transform.smoothscale(frame, self.display_size)
+            if frame_surface.get_size() != self.display_size:
+                frame_surface = pygame.transform.smoothscale(
+                    frame_surface, self.display_size
+                )
 
             if self.args.mirror_output:
-                frame = pygame.transform.flip(frame, True, False)
+                frame_surface = pygame.transform.flip(frame_surface, True, False)
 
-            self.screen.blit(frame, (0, 0))
+            self.screen.blit(frame_surface, (0, 0))
 
-            tracks = self.driver.get_tracks()
             self._update_overtake_alert(tracks)
             overlay_tracks = self._select_tracks(tracks)
             self._debug_tracks(tracks, overlay_tracks)
@@ -548,6 +675,80 @@ class RadarCameraOverlay:
             points,
         )
         return surf
+
+
+class ReplaySource:
+    def __init__(self, video_path: Path, tracks_path: Path) -> None:
+        if cv2 is None:
+            raise RuntimeError(
+                "Replay mode requires opencv-python. Install with "
+                "`python3 -m pip install opencv-python`."
+            )
+        self.video_path = Path(video_path)
+        self.tracks_path = Path(tracks_path)
+        self.capture = cv2.VideoCapture(str(self.video_path))
+        if not self.capture.isOpened():
+            raise RuntimeError(f"Failed to open replay video {self.video_path}.")
+
+        self.width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
+        self.height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
+        self.fps = float(self.capture.get(cv2.CAP_PROP_FPS) or 0.0)
+
+        self._tracks_by_frame = self._load_tracks(self.tracks_path)
+        self._frame_index = 0
+        self._current_tracks: Dict[int, RadarTrack] = {}
+
+    def _load_tracks(self, path: Path) -> Dict[int, List[RadarTrack]]:
+        records: Dict[int, List[RadarTrack]] = {}
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                frame_idx = int(data.get("frame_index", 0))
+                tracks: List[RadarTrack] = []
+                for entry in data.get("tracks", []):
+                    tracks.append(
+                        RadarTrack(
+                            track_id=int(entry["track_id"]),
+                            long_dist=float(entry["long_dist"]),
+                            lat_dist=float(entry["lat_dist"]),
+                            rel_speed=float(entry["rel_speed"]),
+                            new_track=int(entry.get("new_track", 0)),
+                            timestamp=float(entry.get("timestamp", 0.0)),
+                            raw=entry.get("raw", {}) or {},
+                        )
+                    )
+                records[frame_idx] = tracks
+        return records
+
+    def next_frame(self) -> Tuple[Optional[object], Dict[int, RadarTrack]]:
+        if cv2 is None:
+            return None, {}
+
+        ret, frame = self.capture.read()
+        if not ret:
+            return None, {}
+
+        tracks = self._tracks_by_frame.get(self._frame_index)
+        if tracks is not None:
+            self._current_tracks = {track.track_id: track for track in tracks}
+        current_tracks = dict(self._current_tracks)
+        self._frame_index += 1
+        return frame, current_tracks
+
+    def reset(self) -> None:
+        if cv2 is None:
+            return
+        self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        self._frame_index = 0
+        self._current_tracks = {}
+
+    def close(self) -> None:
+        if cv2 is None:
+            return
+        if self.capture.isOpened():
+            self.capture.release()
 
     def _compute_marker_color(self, track: RadarTrack) -> Tuple[int, int, int]:
         delta_kph = abs(track.rel_speed) * 3.6

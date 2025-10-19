@@ -24,7 +24,7 @@ Pygame overlay that superimposes millimeter-wave radar tracks on top of a live U
 Install dependencies:
 
 ```bash
-python3 -m pip install pygame python-can cantools
+python3 -m pip install pygame python-can cantools opencv-python
 ```
 
 ## Running the Overlay
@@ -48,6 +48,18 @@ python3 -m pip install pygame python-can cantools
    - Mirroring is enabled by default; disable with `--no-mirror-output` if your camera is already mirrored.
    - Press `Esc` or `q` to exit.
 
+### Replaying Recorded Sessions
+
+The overlay can operate on previously captured drives recorded with `radar_capture.py`.
+
+```bash
+python3 radar_pygame.py --replay-session captures/freeway_run --replay-loop
+```
+
+- Provide `--replay-session <dir>` to autodetect the MP4 and JSONL files in a capture directory, or supply `--replay-video` / `--replay-tracks` explicitly.
+- All existing overlay features (mirroring, speed thresholds, overtake detection) run as if the radar were live.
+- Use `--replay-loop` to cycle continuously while tuning thresholds.
+
 ### Key CLI Flags
 - `--radar-channel` / `--car-channel`: SocketCAN interface names.
 - `--camera-width` / `--camera-height`: capture resolution (defaults 1280×720).
@@ -59,6 +71,7 @@ python3 -m pip install pygame python-can cantools
 - `--overtake-min-closing-kph`: minimum closing speed of the trailing object in km/h (default 5.0).
 - `--overtake-arrow-duration`: keep the blue overtake arrow visible this many seconds after a track disappears (default 1.0).
 - `--mirror-output` / `--no-mirror-output`: flip the camera feed and overlays horizontally (enabled by default).
+- `--replay-session`, `--replay-video`, `--replay-tracks`, `--replay-loop`: run the overlay on captured data instead of live input.
 
 Run `python3 radar_pygame.py --help` to view all options.
 
@@ -69,6 +82,7 @@ Overtake alerts are raised when a trailing vehicle’s predicted time-to-overtak
 ## Repository Layout
 - `toyota_radar_driver.py` – reusable driver with callback API and keep-alive management.
 - `radar_pygame.py` – pygame-based camera overlay.
+- `radar_capture.py` – records synchronized MP4 video and JSONL radar track logs for offline replay.
 - `radar_curses.py` – terminal visualization using curses.
 - `radar_callbacks.py` – minimal logging example.
 - `opendbc/` – DBC files required for decoding radar messages.
