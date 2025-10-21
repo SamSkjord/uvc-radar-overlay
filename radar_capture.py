@@ -224,6 +224,7 @@ def main() -> None:
 
         camera.set(cv2.CAP_PROP_FRAME_WIDTH, args.camera_width)
         camera.set(cv2.CAP_PROP_FRAME_HEIGHT, args.camera_height)
+        camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         camera.set(cv2.CAP_PROP_FPS, args.camera_fps)
 
         width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH)) or args.camera_width

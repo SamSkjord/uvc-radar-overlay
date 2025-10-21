@@ -279,6 +279,7 @@ class RadarCameraOverlay:
         self.replay_source: Optional["ReplaySource"] = None
         self._camera_initialized = False
         self._last_debug_print = 0.0
+        self._replay_target_hz: float = 0.0
 
     def _init_pygame(self) -> None:
         pygame.init()
@@ -353,16 +354,18 @@ class RadarCameraOverlay:
                 "Replay mode requires opencv-python. Install with "
                 "`python3 -m pip install opencv-python`."
             )
-        video_path, tracks_path = self._resolve_replay_paths()
-        self.replay_source = ReplaySource(video_path, tracks_path)
+        video_path, tracks_path, meta_path = self._resolve_replay_paths()
+        self.replay_source = ReplaySource(video_path, tracks_path, meta_path)
 
         width = self.args.display_width or self.replay_source.width
         height = self.args.display_height or self.replay_source.height
         self.display_size = (width, height)
+        self._replay_target_hz = self.replay_source.fps or 0.0
 
-    def _resolve_replay_paths(self) -> Tuple[Path, Path]:
+    def _resolve_replay_paths(self) -> Tuple[Path, Path, Optional[Path]]:
         video_path = self.args.replay_video
         tracks_path = self.args.replay_tracks
+        meta_path: Optional[Path] = None
         session = self.args.replay_session
 
         if session:
@@ -373,6 +376,9 @@ class RadarCameraOverlay:
                 video_path = self._find_session_file(session, "*.mp4")
             if tracks_path is None:
                 tracks_path = self._find_session_file(session, "*_tracks.jsonl")
+            meta_candidates = list(session.glob("*_meta.json"))
+            if len(meta_candidates) == 1:
+                meta_path = meta_candidates[0]
 
         if video_path is None or tracks_path is None:
             raise RuntimeError(
@@ -387,7 +393,7 @@ class RadarCameraOverlay:
             raise RuntimeError(f"Replay video {video_path} does not exist.")
         if not tracks_path.exists():
             raise RuntimeError(f"Replay track log {tracks_path} does not exist.")
-        return video_path, tracks_path
+        return video_path, tracks_path, meta_path
 
     def _find_session_file(self, session: Path, pattern: str) -> Path:
         matches = sorted(session.glob(pattern))
@@ -411,6 +417,12 @@ class RadarCameraOverlay:
             frame_rgb.tobytes(), (frame_rgb.shape[1], frame_rgb.shape[0]), "RGB"
         )
         return surface.convert()
+
+    def _target_refresh_hz(self, replay_mode: bool) -> float:
+        if replay_mode:
+            if self._replay_target_hz and self._replay_target_hz > 0.0:
+                return self._replay_target_hz
+        return max(self.args.refresh_hz, 1.0)
 
     def _shutdown(self) -> None:
         if self.camera:
@@ -450,7 +462,8 @@ class RadarCameraOverlay:
 
         running = True
         last_frame_time = time.time()
-        target_dt = 1.0 / max(self.args.refresh_hz, 1.0)
+        target_hz = self._target_refresh_hz(replay_mode)
+        target_dt = 1.0 / max(target_hz, 1.0)
 
         while running:
             for event in pygame.event.get():
@@ -498,7 +511,7 @@ class RadarCameraOverlay:
             self._draw_overtake_warning(self.screen)
 
             pygame.display.flip()
-            self.clock.tick(self.args.refresh_hz)
+            self.clock.tick(target_hz)
 
         self._shutdown()
         return 0
@@ -744,7 +757,7 @@ class RadarCameraOverlay:
 
 
 class ReplaySource:
-    def __init__(self, video_path: Path, tracks_path: Path) -> None:
+    def __init__(self, video_path: Path, tracks_path: Path, meta_path: Optional[Path]) -> None:
         if cv2 is None:
             raise RuntimeError(
                 "Replay mode requires opencv-python. Install with "
@@ -758,7 +771,10 @@ class ReplaySource:
 
         self.width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
         self.height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
-        self.fps = float(self.capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        self.metadata = self._load_metadata(meta_path)
+        meta_fps = float(self.metadata.get("fps", 0.0)) if self.metadata else 0.0
+        video_fps = float(self.capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        self.fps = meta_fps or video_fps or 0.0
 
         self._tracks_by_frame = self._load_tracks(self.tracks_path)
         self._frame_index = 0
@@ -787,6 +803,17 @@ class ReplaySource:
                     )
                 records[frame_idx] = tracks
         return records
+
+    def _load_metadata(self, path: Optional[Path]) -> Dict[str, object]:
+        if not path:
+            guessed = self.video_path.with_name(self.video_path.stem + "_meta.json")
+            path = guessed if guessed.exists() else None
+        if path and path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                return {}
+        return {}
 
     def next_frame(self) -> Tuple[Optional[object], Dict[int, RadarTrack]]:
         if cv2 is None:
