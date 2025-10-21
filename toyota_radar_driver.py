@@ -89,17 +89,17 @@ class RadarKeepAlive(threading.Thread):
         self._radar_bus = radar_bus
         self._control_db = control_db
         self._period = 1.0 / max(rate_hz, 1.0)
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self.tx_count = 0
         self.last_error: Optional[str] = None
         self._acc_message = control_db.get_message_by_name("ACC_CONTROL")
         self._frame = 0
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self) -> None:  # pragma: no cover - requires hardware
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             start = time.time()
             try:
                 self._send_frame()
@@ -110,7 +110,7 @@ class RadarKeepAlive(threading.Thread):
             elapsed = time.time() - start
             remaining = self._period - elapsed
             if remaining > 0:
-                self._stop.wait(remaining)
+                self._stop_event.wait(remaining)
 
     def _send_frame(self) -> None:
         if self._acc_message:

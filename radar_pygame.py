@@ -676,6 +676,72 @@ class RadarCameraOverlay:
         )
         return surf
 
+    def _compute_marker_color(self, track: RadarTrack) -> Tuple[int, int, int]:
+        delta_kph = abs(track.rel_speed) * 3.6
+        yellow_thr = max(self.args.warn_yellow_kph, 0.0)
+        red_thr = max(self.args.warn_red_kph, yellow_thr)
+
+        if delta_kph <= yellow_thr:
+            return MARKER_COLOR_GREEN
+        if delta_kph >= red_thr:
+            return MARKER_COLOR_RED
+        return MARKER_COLOR_YELLOW
+
+    def _draw_track_text(
+        self, surface: pygame.Surface, track: RadarTrack, center_x: int
+    ) -> None:
+        if not self.font:
+            return
+
+        range_m = math.hypot(track.long_dist, track.lat_dist)
+        range_surface = self.font.render(f"{range_m:.1f} m", True, TEXT_COLOR)
+        range_rect = range_surface.get_rect()
+        range_rect.midtop = (center_x, TEXT_OFFSET_TOP)
+        surface.blit(range_surface, range_rect)
+
+        speed = track.rel_speed
+        # Toyota radar convention: positive rel_speed = target moving away, negative = closing.
+        if speed > 0.1:
+            speed_color = SPEED_COLOR_AWAY
+        elif speed < -0.1:
+            speed_color = SPEED_COLOR_CLOSING
+        else:
+            speed_color = SPEED_COLOR_STATIONARY
+
+        speed_surface = self.font.render(
+            f"{speed:+.1f} m/s ({speed * 3.6:+.1f} km/h)", True, speed_color
+        )
+        speed_rect = speed_surface.get_rect()
+        speed_rect.midtop = (center_x, range_rect.bottom + TEXT_SPACING)
+        surface.blit(speed_surface, speed_rect)
+
+    def _debug_tracks(
+        self, tracks: Dict[int, RadarTrack], overlay_tracks: List[RadarTrack]
+    ) -> None:
+        now = time.time()
+        if now - self._last_debug_print < 0.5:
+            return
+        self._last_debug_print = now
+        summary = ", ".join(self._format_debug_entry(track) for track in overlay_tracks)
+        if not summary:
+            summary = "no overlay tracks"
+        print(
+            f"[{time.strftime('%H:%M:%S')}] cached={len(tracks)} overlay={len(overlay_tracks)} -> {summary}"
+        )
+
+    def _format_debug_entry(self, track: RadarTrack) -> str:
+        closing_speed = -track.rel_speed if track.rel_speed < 0.0 else None
+        if closing_speed and track.long_dist > 0.0:
+            tto = track.long_dist / closing_speed
+            return (
+                f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f} "
+                f"rel={track.rel_speed:+.1f} tto={tto:.2f}s"
+            )
+        return (
+            f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f} "
+            f"rel={track.rel_speed:+.1f}"
+        )
+
 
 class ReplaySource:
     def __init__(self, video_path: Path, tracks_path: Path) -> None:
@@ -749,71 +815,6 @@ class ReplaySource:
             return
         if self.capture.isOpened():
             self.capture.release()
-
-    def _compute_marker_color(self, track: RadarTrack) -> Tuple[int, int, int]:
-        delta_kph = abs(track.rel_speed) * 3.6
-        yellow_thr = max(self.args.warn_yellow_kph, 0.0)
-        red_thr = max(self.args.warn_red_kph, yellow_thr)
-
-        if delta_kph <= yellow_thr:
-            return MARKER_COLOR_GREEN
-        if delta_kph >= red_thr:
-            return MARKER_COLOR_RED
-        return MARKER_COLOR_YELLOW
-
-    def _draw_track_text(
-        self, surface: pygame.Surface, track: RadarTrack, center_x: int
-    ) -> None:
-        if not self.font:
-            return
-
-        range_m = math.hypot(track.long_dist, track.lat_dist)
-        range_surface = self.font.render(f"{range_m:.1f} m", True, TEXT_COLOR)
-        range_rect = range_surface.get_rect()
-        range_rect.midtop = (center_x, TEXT_OFFSET_TOP)
-        surface.blit(range_surface, range_rect)
-
-        speed = track.rel_speed
-        speed_kph = speed * 3.6
-        # Toyota radar convention: positive rel_speed = target moving away, negative = closing.
-        if speed > 0.1:
-            speed_color = SPEED_COLOR_AWAY
-        elif speed < -0.1:
-            speed_color = SPEED_COLOR_CLOSING
-        else:
-            speed_color = SPEED_COLOR_STATIONARY
-
-        speed_surface = self.font.render(f"{speed:+.1f} m/s", True, speed_color)
-        speed_rect = speed_surface.get_rect()
-        speed_rect.midtop = (center_x, range_rect.bottom + TEXT_SPACING)
-        surface.blit(speed_surface, speed_rect)
-
-    def _debug_tracks(
-        self, tracks: Dict[int, RadarTrack], overlay_tracks: List[RadarTrack]
-    ) -> None:
-        now = time.time()
-        if now - self._last_debug_print < 0.5:
-            return
-        self._last_debug_print = now
-        summary = ", ".join(self._format_debug_entry(track) for track in overlay_tracks)
-        if not summary:
-            summary = "no overlay tracks"
-        print(
-            f"[{time.strftime('%H:%M:%S')}] cached={len(tracks)} overlay={len(overlay_tracks)} -> {summary}"
-        )
-
-    def _format_debug_entry(self, track: RadarTrack) -> str:
-        closing_speed = -track.rel_speed if track.rel_speed < 0.0 else None
-        if closing_speed and track.long_dist > 0.0:
-            tto = track.long_dist / closing_speed
-            return (
-                f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f} "
-                f"rel={track.rel_speed:+.1f} tto={tto:.2f}s"
-            )
-        return (
-            f"id=0x{track.track_id:02X} long={track.long_dist:.1f} lat={track.lat_dist:.1f} "
-            f"rel={track.rel_speed:+.1f}"
-        )
 
 
 def main() -> None:
