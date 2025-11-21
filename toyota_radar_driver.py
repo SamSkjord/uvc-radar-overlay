@@ -221,13 +221,14 @@ class ToyotaRadarDriver:
             self._keepalive.start()
 
         listener = _TrackListener(self)
-        buffered = can.BufferedReader()
+        # MEMORY FIX: Removed BufferedReader that was accumulating messages infinitely
+        # The BufferedReader was never used and caused ~30k Message objects/minute leak
         self._notifier = can.Notifier(
             self._radar_bus,
-            [listener, buffered] + self._raw_callbacks,
+            [listener] + self._raw_callbacks,
             timeout=self.config.notifier_timeout,
         )
-        self._buffered_reader = buffered
+        self._buffered_reader = None  # Keep for compatibility but don't create
         self._rx_count = 0
         self._running = True
 
