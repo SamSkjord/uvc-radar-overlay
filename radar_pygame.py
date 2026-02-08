@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Pygame overlay that composites Toyota radar tracks on top of a UVC camera feed.
-The overlay highlights the nearest tracks within the configured camera field of
-view by drawing green arrows along the top edge of the display.
+Pygame overlay that composites radar tracks on top of a UVC camera feed.
+Supports Toyota (Denso) and Tesla (Bosch MRRevo14F) radars — select with
+--radar-type. The overlay highlights the nearest tracks within the configured
+camera field of view by drawing green arrows along the top edge of the display.
 """
 
 from __future__ import annotations
@@ -24,6 +25,12 @@ except ImportError:  # pragma: no cover - optional dependency
     cv2 = None  # type: ignore[assignment]
 
 from toyota_radar_driver import RadarTrack, ToyotaRadarConfig, ToyotaRadarDriver
+
+try:
+    from tesla_radar_driver import TeslaRadarDriver, TeslaRadarConfig
+    TESLA_AVAILABLE = True
+except ImportError:
+    TESLA_AVAILABLE = False
 
 # Default overlay styling
 ARROW_HEIGHT = 40
@@ -50,11 +57,18 @@ OVERTAKE_ARROW_MARGIN = 24
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Overlay Toyota radar tracks onto a UVC camera feed using pygame."
+        description="Overlay radar tracks onto a UVC camera feed using pygame."
     )
-    # CAN / radar configuration
-    parser.add_argument("--radar-channel", default="can0", help="Radar CAN channel.")
-    parser.add_argument("--car-channel", default="can1", help="Car CAN channel.")
+    # Radar type selection
+    parser.add_argument(
+        "--radar-type",
+        default="toyota",
+        choices=["toyota", "tesla"],
+        help="Radar type: toyota (Denso, dual CAN) or tesla (Bosch MRRevo14F, single CAN).",
+    )
+    # CAN / radar configuration (Toyota)
+    parser.add_argument("--radar-channel", default="can0", help="Radar CAN channel (Toyota).")
+    parser.add_argument("--car-channel", default="can1", help="Car CAN channel (Toyota).")
     parser.add_argument(
         "--interface",
         default="socketcan",
@@ -120,6 +134,27 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.1,
         help="python-can notifier timeout in seconds.",
+    )
+    # Tesla-specific CAN configuration
+    parser.add_argument(
+        "--tesla-channel",
+        default="can0",
+        help="CAN channel for Tesla radar (single bus, used when --radar-type=tesla).",
+    )
+    parser.add_argument(
+        "--tesla-dbc",
+        default="opendbc/tesla_radar.dbc",
+        help="DBC for Tesla radar decoding.",
+    )
+    parser.add_argument(
+        "--tesla-vin",
+        default=None,
+        help="Tesla radar VIN override (default: auto-read via UDS at startup).",
+    )
+    parser.add_argument(
+        "--no-tesla-auto-vin",
+        action="store_true",
+        help="Disable Tesla VIN auto-read at startup.",
     )
     # Display / camera configuration
     parser.add_argument(
@@ -269,7 +304,7 @@ class RadarCameraOverlay:
         )
         self.screen: pygame.Surface | None = None
         self.camera: pygame.camera.Camera | None = None
-        self.driver: ToyotaRadarDriver | None = None
+        self.driver = None
         self.clock = pygame.time.Clock()
         self._frame_surface: pygame.Surface | None = None
         self.font: pygame.font.Font | None = None
@@ -283,7 +318,7 @@ class RadarCameraOverlay:
 
     def _init_pygame(self) -> None:
         pygame.init()
-        pygame.display.set_caption("Toyota Radar Camera Overlay")
+        pygame.display.set_caption("Radar Camera Overlay")
 
         if self.args.windowed:
             self.screen = pygame.display.set_mode(self.display_size)
@@ -320,6 +355,12 @@ class RadarCameraOverlay:
         self._camera_initialized = True
 
     def _init_driver(self) -> None:
+        if self.args.radar_type == "tesla":
+            self._init_tesla_driver()
+        else:
+            self._init_toyota_driver()
+
+    def _init_toyota_driver(self) -> None:
         config = ToyotaRadarConfig(
             radar_channel=self.args.radar_channel,
             car_channel=self.args.car_channel,
@@ -338,6 +379,27 @@ class RadarCameraOverlay:
             keepalive_enabled=not self.args.no_keepalive,
         )
         driver = ToyotaRadarDriver(config)
+        driver.start()
+        self.driver = driver
+
+    def _init_tesla_driver(self) -> None:
+        if not TESLA_AVAILABLE:
+            raise RuntimeError(
+                "Tesla radar driver not available (missing tesla_radar_driver.py)"
+            )
+        config = TeslaRadarConfig(
+            channel=self.args.tesla_channel,
+            interface=self.args.interface,
+            bitrate=self.args.bitrate,
+            radar_dbc=self.args.tesla_dbc,
+            vin=self.args.tesla_vin,
+            track_timeout=self.args.track_timeout,
+            auto_vin=not self.args.no_tesla_auto_vin,
+            auto_setup=not self.args.no_setup,
+            use_sudo=self.args.use_sudo,
+            setup_extra_args=self.args.setup_extra,
+        )
+        driver = TeslaRadarDriver(config)
         driver.start()
         self.driver = driver
 
@@ -713,7 +775,7 @@ class RadarCameraOverlay:
         surface.blit(range_surface, range_rect)
 
         speed = track.rel_speed
-        # Toyota radar convention: positive rel_speed = target moving away, negative = closing.
+        # Both radars: positive rel_speed = target moving away, negative = closing.
         if speed > 0.1:
             speed_color = SPEED_COLOR_AWAY
         elif speed < -0.1:

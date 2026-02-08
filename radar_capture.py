@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Capture radar tracks alongside a synchronized camera recording so runs can be
-replayed off-vehicle. Radar snapshots are written to JSON Lines while the UVC
-camera feed is encoded to disk using OpenCV.
+replayed off-vehicle. Supports Toyota and Tesla radars via --radar-type. Radar
+snapshots are written to JSON Lines while the UVC camera feed is encoded to
+disk using OpenCV.
 """
 
 from __future__ import annotations
@@ -20,14 +21,27 @@ import cv2  # type: ignore[import]
 
 from toyota_radar_driver import RadarTrack, ToyotaRadarConfig, ToyotaRadarDriver
 
+try:
+    from tesla_radar_driver import TeslaRadarDriver, TeslaRadarConfig
+    TESLA_AVAILABLE = True
+except ImportError:
+    TESLA_AVAILABLE = False
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Record Toyota radar tracks with synchronized UVC camera video."
+        description="Record radar tracks with synchronized UVC camera video."
     )
-    # Radar / CAN configuration
-    parser.add_argument("--radar-channel", default="can0", help="Radar CAN channel.")
-    parser.add_argument("--car-channel", default="can1", help="Car CAN channel.")
+    # Radar type selection
+    parser.add_argument(
+        "--radar-type",
+        default="toyota",
+        choices=["toyota", "tesla"],
+        help="Radar type: toyota (Denso, dual CAN) or tesla (Bosch MRRevo14F, single CAN).",
+    )
+    # Radar / CAN configuration (Toyota)
+    parser.add_argument("--radar-channel", default="can0", help="Radar CAN channel (Toyota).")
+    parser.add_argument("--car-channel", default="can1", help="Car CAN channel (Toyota).")
     parser.add_argument(
         "--interface",
         default="socketcan",
@@ -93,6 +107,27 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.1,
         help="python-can notifier timeout in seconds.",
+    )
+    # Tesla-specific CAN configuration
+    parser.add_argument(
+        "--tesla-channel",
+        default="can0",
+        help="CAN channel for Tesla radar (single bus, used when --radar-type=tesla).",
+    )
+    parser.add_argument(
+        "--tesla-dbc",
+        default="opendbc/tesla_radar.dbc",
+        help="DBC for Tesla radar decoding.",
+    )
+    parser.add_argument(
+        "--tesla-vin",
+        default=None,
+        help="Tesla radar VIN override (default: auto-read via UDS at startup).",
+    )
+    parser.add_argument(
+        "--no-tesla-auto-vin",
+        action="store_true",
+        help="Disable Tesla VIN auto-read at startup.",
     )
 
     # Camera / capture configuration
@@ -191,25 +226,44 @@ def main() -> None:
     install_signal_handlers()
 
     try:
-        config = ToyotaRadarConfig(
-            radar_channel=args.radar_channel,
-            car_channel=args.car_channel,
-            interface=args.interface,
-            radar_interface=args.radar_interface,
-            car_interface=args.car_interface,
-            bitrate=args.bitrate,
-            radar_dbc=args.radar_dbc,
-            control_dbc=args.control_dbc,
-            keepalive_rate_hz=args.keepalive_rate_hz,
-            track_timeout=args.track_timeout,
-            notifier_timeout=args.notifier_timeout,
-            auto_setup=not args.no_setup,
-            use_sudo=args.use_sudo,
-            setup_extra_args=args.setup_extra,
-            keepalive_enabled=not args.no_keepalive,
-        )
+        if args.radar_type == "tesla":
+            if not TESLA_AVAILABLE:
+                raise RuntimeError(
+                    "Tesla radar driver not available (missing tesla_radar_driver.py)"
+                )
+            config = TeslaRadarConfig(
+                channel=args.tesla_channel,
+                interface=args.interface,
+                bitrate=args.bitrate,
+                radar_dbc=args.tesla_dbc,
+                vin=args.tesla_vin,
+                track_timeout=args.track_timeout,
+                auto_vin=not args.no_tesla_auto_vin,
+                auto_setup=not args.no_setup,
+                use_sudo=args.use_sudo,
+                setup_extra_args=args.setup_extra,
+            )
+            driver = TeslaRadarDriver(config)
+        else:
+            config = ToyotaRadarConfig(
+                radar_channel=args.radar_channel,
+                car_channel=args.car_channel,
+                interface=args.interface,
+                radar_interface=args.radar_interface,
+                car_interface=args.car_interface,
+                bitrate=args.bitrate,
+                radar_dbc=args.radar_dbc,
+                control_dbc=args.control_dbc,
+                keepalive_rate_hz=args.keepalive_rate_hz,
+                track_timeout=args.track_timeout,
+                notifier_timeout=args.notifier_timeout,
+                auto_setup=not args.no_setup,
+                use_sudo=args.use_sudo,
+                setup_extra_args=args.setup_extra,
+                keepalive_enabled=not args.no_keepalive,
+            )
+            driver = ToyotaRadarDriver(config)
 
-        driver = ToyotaRadarDriver(config)
         driver.start()
     except Exception as exc:
         raise SystemExit(f"Failed to start radar driver: {exc}")
@@ -246,8 +300,9 @@ def main() -> None:
             "resolution": {"width": width, "height": height},
             "fps": fps,
             "codec": args.video_codec,
-            "radar_channel": args.radar_channel,
-            "car_channel": args.car_channel,
+            "radar_type": args.radar_type,
+            "radar_channel": args.tesla_channel if args.radar_type == "tesla" else args.radar_channel,
+            "car_channel": None if args.radar_type == "tesla" else args.car_channel,
             "duration_limit": args.duration,
             "track_timeout": args.track_timeout,
         }
