@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
 [![AI Slop](https://img.shields.io/badge/AI%20Slop%20-%20ChatGPT%20Codex%205-beige)](https://www.morningstar.com/news/marketwatch/20251003175/the-ai-bubble-is-17-times-the-size-of-the-dot-com-frenzy-and-four-times-subprime-this-analyst-argues)
 
-Pygame overlay that superimposes millimeter-wave radar tracks on top of a live UVC camera feed. Supports both **Toyota** (Denso, dual CAN) and **Tesla** (Bosch MRRevo14F, single CAN) radars — select with `--radar-type`. The overlay provides quick spatial context for the nearest objects detected by the radar.
+Pygame overlay that superimposes millimeter-wave radar tracks on top of a live UVC camera feed. Supports both **Toyota** (Denso, dual CAN) and **Tesla** (Bosch MRRevo14F, single CAN) radars - select with `--radar-type`. The overlay provides quick spatial context for the nearest objects detected by the radar.
 
 ## Supported Radars
 
@@ -94,7 +94,7 @@ python3 radar_pygame.py --replay-session captures/freeway_run --replay-loop
 - Use `--replay-loop` to cycle continuously while tuning thresholds.
 
 ### Key CLI Flags
-- `--radar-type`: `toyota` (default) or `tesla` — selects the radar driver.
+- `--radar-type`: `toyota` (default) or `tesla` - selects the radar driver.
 - `--radar-channel` / `--car-channel`: SocketCAN interface names (Toyota).
 - `--tesla-channel`: SocketCAN interface for Tesla (single bus, default `can0`).
 - `--tesla-dbc`: DBC file for Tesla radar (default `opendbc/tesla_radar.dbc`).
@@ -118,15 +118,15 @@ Run `python3 radar_pygame.py --help` to view all options.
 Overtake alerts are raised when a trailing vehicle’s predicted time-to-overtake is below the configured threshold, its lateral offset exceeds `--overtake-min-lateral`, and its closing speed meets `--overtake-min-closing-kph`. When triggered, a blue chevron appears on the side of the screen corresponding to the passing direction and persists for `--overtake-arrow-duration` seconds even if the track temporarily drops.
 
 ## Repository Layout
-- `toyota_radar_driver.py` – Toyota (Denso) radar driver with callback API and keep-alive management.
-- `tesla_radar_driver.py` – Tesla (Bosch MRRevo14F) radar driver with 100Hz vehicle simulation and UDS VIN read.
-- `tesla_radar_protocol.py` – Tesla radar CAN protocol (threaded 100Hz TX loop).
-- `uds_can.py` – ISO-TP / UDS transport layer for Tesla VIN auto-read.
-- `radar_pygame.py` – pygame-based camera overlay (supports both radars via `--radar-type`).
-- `radar_capture.py` – records synchronized MP4 video and JSONL radar track logs for offline replay.
-- `radar_curses.py` – terminal visualization using curses.
-- `radar_callbacks.py` – minimal logging example.
-- `opendbc/` – DBC files for Toyota and Tesla radar decoding.
+- `toyota_radar_driver.py` - Toyota (Denso) radar driver with callback API and keep-alive management.
+- `tesla_radar_driver.py` - Tesla (Bosch MRRevo14F) radar driver with 100Hz vehicle simulation and UDS VIN read.
+- `tesla_radar_protocol.py` - Tesla radar CAN protocol (threaded 100Hz TX loop).
+- `uds_can.py` - ISO-TP / UDS transport layer for Tesla VIN auto-read.
+- `radar_pygame.py` - pygame-based camera overlay (supports both radars via `--radar-type`).
+- `radar_capture.py` - records synchronized MP4 video and JSONL radar track logs for offline replay.
+- `radar_curses.py` - terminal visualization using curses.
+- `radar_callbacks.py` - minimal logging example.
+- `opendbc/` - DBC files for Toyota and Tesla radar decoding.
 
 ## Calibration Tips
 - Measure the true camera FOV and pass it via `--camera-fov` for accurate alignment.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tesla Radar Protocol Implementation — standalone version for tesla-radar driver.
+Tesla Radar Protocol Implementation - standalone version for tesla-radar driver.
 
 Based on the working Panda safety layer (safety_teslaradar.h).
 Implements proper frequency-based message transmission and VIN protocol.

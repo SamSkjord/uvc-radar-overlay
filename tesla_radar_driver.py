@@ -44,7 +44,7 @@ UDS_RX = 0x651
 
 @dataclasses.dataclass
 class RadarTrack:
-    """Base radar track — compatible with toyota-radar's RadarTrack."""
+    """Base radar track - compatible with toyota-radar's RadarTrack."""
     track_id: int
     long_dist: float
     lat_dist: float

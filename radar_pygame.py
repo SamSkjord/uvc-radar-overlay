@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pygame overlay that composites radar tracks on top of a UVC camera feed.
-Supports Toyota (Denso) and Tesla (Bosch MRRevo14F) radars — select with
+Supports Toyota (Denso) and Tesla (Bosch MRRevo14F) radars - select with
 --radar-type. The overlay highlights the nearest tracks within the configured
 camera field of view by drawing green arrows along the top edge of the display.
 """
